@@ -149,6 +149,11 @@ void TaskGroup::run_main_task() {
     
     TaskGroup* dummy = this;
     bthread_t tid;
+    // 这里只会从_remote_rq中检查是否有任务，因为如果_rq中有任务的话在ending_sched中
+    // 就会不断地取出执行地，而如果在这里wait的话说明本地队列已经没有任务可做了。而因为
+    // run_main_task是运行在worker pthread中的，说明本thread已经不会提交任务进_rq了
+    // 此时提交的任务必然都来自于其他pthread线程，所以只需要检查_remote_rq就可以了
+    // see: https://github.com/apache/incubator-brpc/issues/296
     while (wait_task(&tid)) {
         TaskGroup::sched_to(&dummy, tid);
         DCHECK_EQ(this, dummy);
@@ -602,6 +607,11 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         if (cur_meta->stack != NULL) {
             if (next_meta->stack != cur_meta->stack) {
                 jump_stack(cur_meta->stack, next_meta->stack);
+                // 是不是因为某个bthread的栈可能是分配在另一个pthread中(使用其main stack)的，但是由于work stealing
+                // 该task被本worker得到，那么jump stack会回到最初的pthread worker中？
+                // 所以以下两种情况下，work stealing作用不大：
+                // 1. 用户选择的栈模式是BTHREAD_STACKTYPE_PTHREAD
+                // 2. 分配栈空间时OOM了
                 // probably went to another group, need to assign g again.
                 g = tls_task_group;
             }
